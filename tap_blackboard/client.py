@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from functools import cached_property
 from typing import Any
 from urllib.parse import urljoin
@@ -122,3 +123,38 @@ class blackboardStream(RESTStream):
                 params["modified"] = start_date.strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 params["modifiedCompare"] = "greaterOrEqual"
         return params
+
+
+class blackboardChildStream(blackboardStream):
+    """Course/column-scoped stream that skips partitions denied with HTTP 403."""
+
+    @override
+    def validate_response(self, response: requests.Response) -> None:
+        """Allow 403 through so the partition can be skipped instead of failing."""
+        if response.status_code == 403:
+            return
+        super().validate_response(response)
+
+    @override
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        """Yield no records when Blackboard forbids this partition."""
+        if response.status_code == 403:
+            url = response.url or (response.request.url if response.request else "")
+            self.logger.warning(
+                "Skipping stream %r: HTTP 403 Forbidden for %s",
+                self.name,
+                url,
+            )
+            return
+        yield from super().parse_response(response)
+
+    @override
+    def get_next_page_token(
+        self,
+        response: requests.Response,
+        previous_token: Any | None,
+    ) -> Any | None:
+        """Stop paging after a forbidden response."""
+        if response.status_code == 403:
+            return None
+        return super().get_next_page_token(response, previous_token)

@@ -1,14 +1,11 @@
 {
-    // https://code.visualstudio.com/docs/editor/debugging
-    // Shell redirects (e.g. > catalog.json) are not applied here—args go straight to Python.
-    // After debug, redirect in the integrated terminal if you need files on disk.
     "version": "0.2.0",
     "configurations": [
         {
             "name": "tap-blackboard discover",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
-            "program": "../tap_blackboard/tap.py",
+            "module": "tap_blackboard.tap",
             "cwd": "${workspaceFolder}/.secrets",
             "args": [
                 "--config",
@@ -17,28 +14,47 @@
                 ">",
                 "catalog.json"
             ],
-            "console": "integratedTerminal",
-            "python": "${workspaceFolder}/.venv/bin/python3"
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "console": "integratedTerminal"
         },
         {
-            "name": "tap-blackboard get",
-            "type": "python",
+            "name": "tap-blackboard sync",
+            "type": "debugpy",
             "request": "launch",
-            "justMyCode": false,
-            "program": "../tap_blackboard/tap.py",
+            "module": "tap_blackboard.tap",
             "cwd": "${workspaceFolder}/.secrets",
             "args": [
                 "--config",
                 "config.json",
+                "--catalog",
+                "catalog-selected.json",
+                ">",
+                "data.singer"
+            ],
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "tap-blackboard sync state",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "tap_blackboard.tap",
+            "cwd": "${workspaceFolder}/.secrets",
+            "args": [
+                "--config",
+                "config.json",
+                "--catalog",
+                "catalog-selected.json",
                 "--state",
                 "state.json",
-                "--catalog",
-                "selected-catalog.json",
                 ">",
-                "data.txt"
+                "data.singer"
             ],
-            "console": "integratedTerminal",
-            "python": "${workspaceFolder}/.venv/bin/python3"
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "console": "integratedTerminal"
         }
     ]
 }

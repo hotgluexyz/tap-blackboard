@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 from typing_extensions import override
 
-from tap_blackboard.client import blackboardStream
+from tap_blackboard.client import blackboardChildStream, blackboardStream
 
 
 class CoursesStream(blackboardStream):
@@ -86,7 +86,7 @@ class CoursesStream(blackboardStream):
             yield resp.json()
 
 
-class EnrollmentsStream(blackboardStream):
+class EnrollmentsStream(blackboardChildStream):
     """Stream for course memberships (enrollments)."""
 
     name = "enrollments"
@@ -118,7 +118,7 @@ class EnrollmentsStream(blackboardStream):
         return row
 
 
-class GradebookColumnsStream(blackboardStream):
+class GradebookColumnsStream(blackboardChildStream):
     """Stream for gradebook columns (assignments and exams)."""
 
     name = "gradebook_columns"
@@ -162,7 +162,7 @@ class GradebookColumnsStream(blackboardStream):
         return row
 
 
-class GradesStream(blackboardStream):
+class GradesStream(blackboardChildStream):
     """Stream for per-user grades on a gradebook column.
 
     Grade payloads are inconsistent about a ``modified`` timestamp, so this
@@ -248,7 +248,7 @@ class AnnouncementsStream(blackboardStream):
     ).to_dict()
 
 
-class CourseAnnouncementsStream(blackboardStream):
+class CourseAnnouncementsStream(blackboardChildStream):
     """Stream for course-scoped announcements."""
 
     name = "course_announcements"
