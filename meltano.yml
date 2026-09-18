@@ -1,0 +1,55 @@
+send_anonymous_usage_stats: true
+project_id: "tap-blackboard"
+default_environment: test
+requires_meltano: ">=4.0"
+environments:
+- name: test
+plugins:
+  extractors:
+  - name: "tap-blackboard"
+    namespace: "tap_blackboard"
+    pip_url: -e .
+    capabilities:
+    - state
+    - catalog
+    - discover
+    - about
+    - stream-maps
+    - structured-logging
+
+    settings:
+    - name: client_id
+      label: Client ID
+      description: OAuth application key from the Blackboard developer portal
+      sensitive: true
+
+    - name: client_secret
+      label: Client Secret
+      description: OAuth application secret from the Blackboard developer portal
+      sensitive: true
+
+    - name: start_date
+      kind: date_iso8601
+      label: Start Date
+      description: Initial date to start extracting data from
+
+    - name: api_url
+      label: API URL
+      description: Blackboard Learn host root URL
+
+    - name: course_ids
+      kind: array
+      label: Course IDs
+      description: Optional list of Learn course primary keys to limit the sync
+
+    settings_group_validation:
+    - [client_id, client_secret]
+
+    config:
+      start_date: 6 months ago
+      api_url: https://bd-partner-a-original.blackboard.com
+
+  loaders:
+  - name: target-jsonl
+    variant: andyh1203
+    pip_url: target-jsonl
