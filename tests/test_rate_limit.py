@@ -39,35 +39,35 @@ def grades_stream() -> GradesStream:
     return GradesStream(tap)
 
 
-def test_rate_limit_wait_honors_retry_after_cap():
+def test_wait_generator_honors_capped_retry_after(grades_stream: GradesStream):
     """Retry-After above the cap should not park the job for hours."""
-    response = requests.Response()
-    response.status_code = 429
-    response.headers["Retry-After"] = "7200"
-    exc = RetriableAPIError("429", response)
-
-    assert (
-        blackboardStream._rate_limit_wait_seconds(exc) == MAX_RETRY_AFTER_SECONDS
-    )
+    grades_stream._last_retry_after = 7200
+    wait = grades_stream.backoff_wait_generator()
+    assert next(wait) == MAX_RETRY_AFTER_SECONDS
 
 
-def test_rate_limit_wait_honors_short_retry_after():
+def test_wait_generator_honors_short_retry_after(grades_stream: GradesStream):
     """Short Retry-After values should be used as-is."""
-    response = requests.Response()
-    response.status_code = 429
-    response.headers["Retry-After"] = "12"
-    exc = RetriableAPIError("429", response)
-
-    assert blackboardStream._rate_limit_wait_seconds(exc) == 12
+    grades_stream._last_retry_after = 12
+    wait = grades_stream.backoff_wait_generator()
+    assert next(wait) == 12
 
 
-def test_rate_limit_wait_defaults_without_header():
-    """Missing Retry-After falls back to a short fixed delay."""
-    response = requests.Response()
-    response.status_code = 429
-    exc = RetriableAPIError("429", response)
+def test_wait_generator_falls_back_to_expo(grades_stream: GradesStream):
+    """Without Retry-After, the first wait comes from exponential backoff."""
+    grades_stream._last_retry_after = None
+    wait = grades_stream.backoff_wait_generator()
+    assert next(wait) == 2  # backoff.expo(factor=2) starts at 2 * 2**0
 
-    assert blackboardStream._rate_limit_wait_seconds(exc) == 5
+
+def test_wait_generator_never_yields_none(grades_stream: GradesStream):
+    """backoff 1.x passes each yield into full_jitter(value); None breaks it."""
+    wait = grades_stream.backoff_wait_generator()
+    for _ in range(5):
+        value = next(wait)
+        assert value is not None
+        assert isinstance(value, int)
+        assert value > 0
 
 
 def test_child_stream_skips_403_without_raising(grades_stream: GradesStream):

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 from functools import cached_property
 from typing import Any, ClassVar
 from urllib.parse import urljoin
 
+import backoff
 import requests
 from hotglue_singer_sdk.authenticators import APIAuthenticatorBase
 from hotglue_singer_sdk.exceptions import RetriableAPIError
@@ -28,6 +29,7 @@ class blackboardStream(RESTStream):
     page_size = PAGE_SIZE
     # Shared across all stream instances for the process lifetime of a sync.
     _rate_limit_tripped: ClassVar[bool] = False
+    _last_retry_after: int | None = None
 
     @override
     @property
@@ -63,23 +65,43 @@ class blackboardStream(RESTStream):
         return RATE_LIMIT_MAX_TRIES
 
     @override
-    def backoff_wait_generator(self):
-        """Honor Blackboard ``Retry-After``, capped so daily quota waits do not hang."""
-        return self.backoff_runtime(value=self._rate_limit_wait_seconds)
+    def backoff_wait_generator(self) -> Generator[int, None, None]:
+        """Yield wait times for backoff 1.x (``next()`` only, not ``.send``).
 
-    @staticmethod
-    def _rate_limit_wait_seconds(exception: BaseException) -> int:
-        """Return seconds to wait before the next retry for a retriable failure."""
-        response = getattr(exception, "response", None)
-        if response is not None:
-            retry_after = response.headers.get("Retry-After")
+        Prefer Blackboard ``Retry-After`` when present, otherwise exponential
+        backoff. Waits are capped so daily-quota resets do not hang the job.
+        """
+        return self._retry_after_or_expo()
+
+    def _retry_after_or_expo(self) -> Generator[int, None, None]:
+        """Wait generator compatible with ``backoff==1.x`` / ``full_jitter(value)``."""
+        expo = backoff.expo(factor=2, max_value=MAX_RETRY_AFTER_SECONDS)
+        while True:
+            retry_after = self._last_retry_after
             if retry_after is not None:
-                try:
-                    wait = int(float(str(retry_after).strip()))
-                    return min(max(wait, 1), MAX_RETRY_AFTER_SECONDS)
-                except ValueError:
-                    pass
-        return 5
+                self._last_retry_after = None
+                yield min(max(retry_after, 1), MAX_RETRY_AFTER_SECONDS)
+            else:
+                yield int(next(expo))
+
+    def _capture_retry_after(self, response: requests.Response) -> None:
+        """Stash Retry-After from a 429 so the wait generator can honor it."""
+        if response.status_code != 429:
+            return
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            self._last_retry_after = None
+            return
+        try:
+            self._last_retry_after = int(float(str(raw).strip()))
+        except ValueError:
+            self._last_retry_after = None
+
+    @override
+    def validate_response(self, response: requests.Response) -> None:
+        """Capture Retry-After before the SDK raises RetriableAPIError on 429."""
+        self._capture_retry_after(response)
+        super().validate_response(response)
 
     @override
     def request_records(self, context: dict | None) -> Iterable[dict]:
@@ -209,6 +231,7 @@ class blackboardChildStream(blackboardStream):
         if response.status_code == 403:
             return
         if response.status_code == 429 and blackboardStream._rate_limit_tripped:
+            self._capture_retry_after(response)
             return
         super().validate_response(response)
 
