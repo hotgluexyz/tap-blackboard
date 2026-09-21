@@ -59,9 +59,19 @@ class blackboardStream(RESTStream):
         """
         return {"Accept": "application/json"}
 
+    def _skip_429s_enabled(self) -> bool:
+        """Return whether config asks to soft-stop on 429.
+
+        Hotglue ``connect_ui_params.skip_429s`` is written as top-level
+        ``skip_429s`` on the connector config passed to the tap.
+        """
+        return bool(self.config.get("skip_429s"))
+
     @override
     def backoff_max_tries(self) -> int:
-        """Retry rate limits a few more times before giving up on a partition."""
+        """Retry rate limits unless skip_429s is on (then fail fast into soft-stop)."""
+        if self._skip_429s_enabled():
+            return 1
         return RATE_LIMIT_MAX_TRIES
 
     @override
@@ -99,17 +109,36 @@ class blackboardStream(RESTStream):
 
     @override
     def validate_response(self, response: requests.Response) -> None:
-        """Capture Retry-After before the SDK raises RetriableAPIError on 429."""
+        """On skip_429s, soft-accept the first 429 and stop further API work."""
         self._capture_retry_after(response)
+        if response.status_code == 429 and self._skip_429s_enabled():
+            if not blackboardStream._rate_limit_tripped:
+                self._trip_rate_limit(response, None)
+            return
+        if response.status_code == 429 and blackboardStream._rate_limit_tripped:
+            return
         super().validate_response(response)
 
     @override
-    def request_records(self, context: dict | None) -> Iterable[dict]:
-        """Request records, stopping further calls after a hard rate-limit trip."""
-        if blackboardStream._rate_limit_tripped:
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        """Yield no records when a 429 soft-stop is in effect."""
+        if response.status_code == 429 and blackboardStream._rate_limit_tripped:
+            url = response.url or (response.request.url if response.request else "")
             self.logger.warning(
-                "Skipping stream %r partition %s: Blackboard daily rate limit "
-                "already exhausted this sync",
+                "Skipping stream %r: HTTP 429 for %s",
+                self.name,
+                url,
+            )
+            return
+        yield from super().parse_response(response)
+
+    @override
+    def request_records(self, context: dict | None) -> Iterable[dict]:
+        """Request records; when skip_429s tripped, end the sync without more calls."""
+        if blackboardStream._rate_limit_tripped and self._skip_429s_enabled():
+            self.logger.warning(
+                "Skipping stream %r partition %s: skip_429s stopped sync after "
+                "rate limit",
                 self.name,
                 context,
             )
@@ -119,7 +148,11 @@ class blackboardStream(RESTStream):
             yield from super().request_records(context)
         except RetriableAPIError as exc:
             response = getattr(exc, "response", None)
-            if response is not None and response.status_code == 429:
+            if (
+                response is not None
+                and response.status_code == 429
+                and self._skip_429s_enabled()
+            ):
                 self._trip_rate_limit(response, context)
                 return
             raise
@@ -136,10 +169,9 @@ class blackboardStream(RESTStream):
         limit = response.headers.get("X-Rate-Limit-Limit")
         retry_after = response.headers.get("Retry-After")
         self.logger.warning(
-            "Skipping stream %r partition %s after HTTP 429 for %s "
-            "(X-Rate-Limit-Remaining=%s, X-Rate-Limit-Limit=%s, Retry-After=%s). "
-            "Remaining partitions in this sync will be skipped. Reduce scope with "
-            "course_ids or raise the developer-group rate limit.",
+            "skip_429s: stopping sync after HTTP 429 for stream %r partition %s "
+            "(%s; X-Rate-Limit-Remaining=%s, X-Rate-Limit-Limit=%s, "
+            "Retry-After=%s). Records already emitted will proceed to ETL.",
             self.name,
             context,
             url,
@@ -166,6 +198,8 @@ class blackboardStream(RESTStream):
         .. _requests.Response:
             https://requests.readthedocs.io/en/latest/api/#requests.Response
         """
+        if response.status_code == 429 and blackboardStream._rate_limit_tripped:
+            return None
         return response.json().get("paging", {}).get("nextPage")
 
     @override
@@ -227,7 +261,7 @@ class blackboardChildStream(blackboardStream):
 
     @override
     def validate_response(self, response: requests.Response) -> None:
-        """Allow 403 through; allow 429 only after the sync rate-limit circuit trips."""
+        """Allow 403 through; soft-accept 429 when skip_429s has tripped the sync."""
         if response.status_code == 403:
             return
         if response.status_code == 429 and blackboardStream._rate_limit_tripped:

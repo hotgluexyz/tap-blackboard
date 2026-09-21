@@ -32,11 +32,28 @@ def _reset_rate_limit_flag():
     blackboardStream._rate_limit_tripped = False
 
 
+def _grades_stream(**config_overrides) -> GradesStream:
+    """Return a grades stream with optional config overrides."""
+    tap = Tapblackboard(config={**SAMPLE_CONFIG, **config_overrides})
+    return GradesStream(tap)
+
+
 @pytest.fixture
 def grades_stream() -> GradesStream:
-    """Return a grades stream instance for unit tests."""
-    tap = Tapblackboard(config=SAMPLE_CONFIG)
-    return GradesStream(tap)
+    """Return a grades stream with skip_429s enabled."""
+    return _grades_stream(skip_429s=True)
+
+
+def test_skip_429s_reads_top_level_config():
+    """Hotglue connect_ui_params values are flattened onto tap config."""
+    stream = _grades_stream(skip_429s=True)
+    assert stream._skip_429s_enabled() is True
+
+
+def test_skip_429s_defaults_off():
+    """Without the flag, 429s are not soft-stopped."""
+    stream = _grades_stream()
+    assert stream._skip_429s_enabled() is False
 
 
 def test_wait_generator_honors_capped_retry_after(grades_stream: GradesStream):
@@ -81,11 +98,8 @@ def test_child_stream_skips_403_without_raising(grades_stream: GradesStream):
     assert grades_stream.get_next_page_token(response, None) is None
 
 
-def test_request_records_trips_circuit_on_exhausted_429(
-    grades_stream: GradesStream,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """After retries are exhausted, 429 should trip the circuit and skip."""
+def test_skip_429s_soft_stops_on_first_429(grades_stream: GradesStream):
+    """With skip_429s, the first 429 trips the circuit without raising."""
     response = requests.Response()
     response.status_code = 429
     response.url = (
@@ -93,24 +107,34 @@ def test_request_records_trips_circuit_on_exhausted_429(
         "columns/_2/users"
     )
     response.headers["X-Rate-Limit-Remaining"] = "0"
-    response.headers["X-Rate-Limit-Limit"] = "10000"
     response.headers["Retry-After"] = "3600"
 
-    def boom(self, context):  # noqa: ARG001
-        raise RetriableAPIError("429 Client Error", response)
-        yield  # pragma: no cover
+    grades_stream.validate_response(response)
 
-    monkeypatch.setattr(RESTStream, "request_records", boom)
-
-    assert list(grades_stream.request_records({"course_id": "_1"})) == []
     assert blackboardStream._rate_limit_tripped is True
+    assert list(grades_stream.parse_response(response)) == []
+    assert grades_stream.get_next_page_token(response, None) is None
+
+
+def test_without_skip_429s_raises_on_429():
+    """When skip_429s is off, 429 remains a retriable/fatal SDK error path."""
+    stream = _grades_stream(skip_429s=False)
+    response = requests.Response()
+    response.status_code = 429
+    response.reason = "Too Many Requests"
+    response.url = "https://example.test/rate-limited"
+
+    with pytest.raises(RetriableAPIError):
+        stream.validate_response(response)
+
+    assert blackboardStream._rate_limit_tripped is False
 
 
 def test_request_records_skips_without_http_when_circuit_tripped(
     grades_stream: GradesStream,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Once tripped, later partitions should not call the API again."""
+    """Once tripped under skip_429s, later partitions should not call the API."""
     blackboardStream._rate_limit_tripped = True
     called = {"super": False}
 
@@ -123,14 +147,3 @@ def test_request_records_skips_without_http_when_circuit_tripped(
 
     assert list(grades_stream.request_records({"course_id": "_1"})) == []
     assert called["super"] is False
-
-
-def test_tripped_circuit_allows_429_through_validate(grades_stream: GradesStream):
-    """After the circuit trips, validate_response must not re-raise 429."""
-    blackboardStream._rate_limit_tripped = True
-    response = requests.Response()
-    response.status_code = 429
-    response.url = "https://example.test/rate-limited"
-
-    grades_stream.validate_response(response)
-    assert list(grades_stream.parse_response(response)) == []

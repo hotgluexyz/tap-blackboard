@@ -68,6 +68,16 @@ class Tapblackboard(Tap):
                 "sync to specific courses and their child streams"
             ),
         ),
+        th.Property(
+            "skip_429s",
+            th.BooleanType,
+            default=False,
+            description=(
+                "When true, stop the sync on the first HTTP 429 (rate limit), keep "
+                "records already emitted, and exit successfully so ETL can run. "
+                "Expose via Hotglue connect_ui_params as skip_429s."
+            ),
+        ),
     ).to_dict()
 
     @override
